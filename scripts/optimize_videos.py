@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -248,12 +249,24 @@ def run(command: List[str]) -> subprocess.CompletedProcess:
     return result
 
 
-def safe_optimize(source: Path, out: Path, video: Video, args: argparse.Namespace) -> Outcome:
+class Progress:
+    """Counts finished videos across the worker threads: "[ 42/316  13%]"."""
+
+    def __init__(self, total: int):
+        self.total, self.done, self.lock = total, 0, threading.Lock()
+
+    def tick(self) -> str:
+        with self.lock:
+            self.done += 1
+            return f"[{self.done:>{len(str(self.total))}}/{self.total} {100 * self.done // self.total:3}%]"
+
+
+def safe_optimize(source: Path, out: Path, video: Video, args: argparse.Namespace, progress: Progress) -> Outcome:
     try:
         outcome = optimize(source, out, video, args)
     except Exception as error:  # one bad file must not stop a 300-file run
         outcome = Outcome(video=video, action="FAILED", notes=[str(error)])
-    print(f"{outcome.action:32} {video.path}", flush=True)
+    print(f"{progress.tick()} {outcome.action:32} {video.path}", flush=True)
     return outcome
 
 
@@ -327,7 +340,8 @@ def main() -> None:
 
     out.mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        outcomes = list(pool.map(lambda video: safe_optimize(source, out, video, args), videos))
+        progress = Progress(len(videos))
+        outcomes = list(pool.map(lambda video: safe_optimize(source, out, video, args, progress), videos))
     write_report(out, outcomes)
 
 
